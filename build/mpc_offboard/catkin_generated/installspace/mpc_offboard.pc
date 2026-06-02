@@ -1,0 +1,8 @@
+prefix=/home/sundy/catkin_ws_off-dob/install
+
+Name: mpc_offboard
+Description: Description of mpc_offboard
+Version: 0.0.0
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: 

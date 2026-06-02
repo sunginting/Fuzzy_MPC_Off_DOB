@@ -1,0 +1,2 @@
+mpc_offboard
+-DCATKIN_DEVEL_PREFIX=/home/sundy/catkin_ws_off-dob/devel -DCMAKE_INSTALL_PREFIX=/home/sundy/catkin_ws_off-dob/install -G Unix Makefiles
