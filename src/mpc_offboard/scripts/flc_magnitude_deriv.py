@@ -21,26 +21,33 @@ class FuzzyLogicControl_Position:
         ['PB', 'PB', 'NB', 'PB', 'PB'],
         ['PB', 'PS', 'NS', 'PS', 'PB'],
         ['PB', 'PS', 'Z',  'PS', 'PB'],
-        ['PB', 'PS', 'PS', 'PS', 'PB'],
-        ['PB', 'PB', 'PB', 'PB', 'PB']
+        ['PB', 'PS', 'NS', 'PS', 'PB'],
+        ['PB', 'PB', 'NB', 'PB', 'PB']
         ])
     
-    q_pose_max = 60
-    q_pose_min = 35
+    q_x_max = 70
+    q_x_min = 35
+
+    q_y_max = 70
+    q_y_min = 35
 
     q_alt_max = 120
     q_alt_min = 100
 
     q_velo_max = 30
-    q_velo_min = 15
+    q_velo_min = 20
 
     q_vz_max = 20
     q_vz_min = 10
 
-    r_pose_max = 1.0
-    r_pose_min = 0.1
-    r_alt_max = 0.5
-    r_alt_min = 0.02
+    r_x_max = 0.2
+    r_x_min = 0.05
+
+    r_y_max = 0.2
+    r_y_min = 0.05
+
+    r_alt_max = 0.06
+    r_alt_min = 0.04
 
     def __init__(self):
         # Inisialisasi variabel untuk menghindari altributeError
@@ -50,8 +57,8 @@ class FuzzyLogicControl_Position:
         self.velocity_actual = np.zeros(3)
 
         # Inisialisasi output weights
-        self.q = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
-        self.r = [1.0, 1.0, 1.0]
+        self.q = [60.0, 60.0, 100.0, 20.0, 20.0, 12.0]
+        self.r = [0.2, 0.2, 0.06]
 
         self.prev_x_error_mag = 0.0
         self.prev_y_error_mag = 0.0
@@ -90,7 +97,8 @@ class FuzzyLogicControl_Position:
         self.velo_desired_sub = rospy.Subscriber("/trajectory/ref_vel", TwistStamped, self.velo_desired_callback, queue_size=10)
 
     def pose_actual_callback(self, msg:PoseStamped):
-        self.position_actual = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z])
+        # ENU -> NED
+        self.position_actual = np.array([msg.pose.position.y, msg.pose.position.x, -msg.pose.position.z])
         self.orientation_actual_quat= np.array([msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z, msg.pose.orientation.w])
         self.orientation_actual_euler = euler_from_quaternion(self.orientation_actual_quat)
 
@@ -99,42 +107,35 @@ class FuzzyLogicControl_Position:
             self.previous_time = self.current_time
             return
 
-        raw_error_x = self.position_desired[0]-self.position_actual[0]
-        raw_error_y = self.position_desired[1]-self.position_actual[1]
-        raw_error_z = self.position_desired[2]-self.position_actual[2]
+        x_error = self.position_desired[0]-self.position_actual[0]
+        y_error = self.position_desired[1]-self.position_actual[1]
+        z_error = self.position_desired[2]-self.position_actual[2]
 
-        raw_error_vx = self.velocity_desired[0] - self.velocity_actual[0]
-        raw_error_vy = self.velocity_desired[1] - self.velocity_actual[1]
-        raw_error_vz = self.velocity_desired[2] - self.velocity_actual[2]
+        vx_error = self.velocity_desired[0] - self.velocity_actual[0]
+        vy_error = self.velocity_desired[1] - self.velocity_actual[1]
+        vz_error = self.velocity_desired[2] - self.velocity_actual[2]
 
-        x_error_mag = self.lpf(raw_error_x, self.prev_x_error_mag)
-        y_error_mag = self.lpf(raw_error_y, self.prev_y_error_mag)
-        alt_error_mag = self.lpf(raw_error_z, self.prev_alt_error_mag)
-        vx_error_mag = self.lpf(raw_error_vx, self.prev_vx_error_mag)
-        vy_error_mag = self.lpf(raw_error_vy, self.prev_vy_error_mag)
-        vz_error_mag = self.lpf(raw_error_vz, self.prev_vz_error_mag)
-
-        x_error_norm = np.clip(x_error_mag/8.0, -1.0, 1.0)
-        y_error_norm = np.clip(y_error_mag/8.0, -1.0, 1.0)
-        alt_error_norm = np.clip(alt_error_mag/0.15, -1.0, 1.0)
-        vx_error_norm = np.clip(vx_error_mag/0.75, -1.0, 1.0)
-        vy_error_norm = np.clip(vy_error_mag/0.75, -1.0, 1.0)
-        vz_error_norm = np.clip(vz_error_mag/0.5, -1.0, 1.0)
+        x_error_norm = np.clip(x_error/5.0, -1.0, 1.0)
+        y_error_norm = np.clip(y_error/5.0, -1.0, 1.0)
+        alt_error_norm = np.clip(z_error/0.3, -1.0, 1.0)
+        vx_error_norm = np.clip(vx_error/0.75, -1.0, 1.0)
+        vy_error_norm = np.clip(vy_error/0.75, -1.0, 1.0)
+        vz_error_norm = np.clip(vz_error/0.5, -1.0, 1.0)
 
         dt = self.current_time - self.previous_time
         if dt <= 0:
             return
         else:
-            d_x_error = (x_error_mag - self.prev_x_error_mag) / dt
-            d_y_error = (y_error_mag - self.prev_y_error_mag) / dt
-            d_alt_error = (alt_error_mag- self.prev_alt_error_mag)/dt
-            d_vx_error = (vx_error_mag - self.prev_vx_error_mag)/dt
-            d_vy_error = (vy_error_mag - self.prev_vy_error_mag)/dt
-            d_vz_error = (vz_error_mag - self.prev_vz_error_mag)/dt
+            d_x_error = (x_error - self.prev_x_error_mag) / dt
+            d_y_error = (y_error - self.prev_y_error_mag) / dt
+            d_alt_error = (z_error - self.prev_alt_error_mag)/dt
+            d_vx_error = (vx_error - self.prev_vx_error_mag)/dt
+            d_vy_error = (vy_error - self.prev_vy_error_mag)/dt
+            d_vz_error = (vz_error - self.prev_vz_error_mag)/dt
 
-        d_x_error_norm = np.clip(d_x_error/3.0, -1.0, 1.0)
-        d_y_error_norm = np.clip(d_y_error/3.0, -1.0, 1.0)
-        d_alt_error_norm = np.clip(d_alt_error/0.07, -1.0, 1.0)
+        d_x_error_norm = np.clip(d_x_error/1, -1.0, 1.0)
+        d_y_error_norm = np.clip(d_y_error/1, -1.0, 1.0)
+        d_alt_error_norm = np.clip(d_alt_error/0.5, -1.0, 1.0)
         d_vx_error_norm = np.clip(d_vx_error/0.5, -1.0, 1.0)
         d_vy_error_norm = np.clip(d_vy_error/0.5, -1.0, 1.0)
         d_vz_error_norm = np.clip(d_vz_error/0.2, -1.0, 1.0)
@@ -153,22 +154,22 @@ class FuzzyLogicControl_Position:
         d_vy = np.clip(self.prev_d_vy + del_d_vy, 0.0, 1.0)
         d_vz   = np.clip(self.prev_d_vz   + del_d_vz,   0.0, 1.0)
 
-        self.q_x = self.q_pose_min + d_x*(self.q_pose_max - self.q_pose_min)
-        self.q_y = self.q_pose_min + d_y*(self.q_pose_max - self.q_pose_min)
+        self.q_x = self.q_x_min + d_x*(self.q_x_max - self.q_x_min)
+        self.q_y = self.q_y_min + d_y*(self.q_y_max - self.q_y_min)
         self.q_alt = self.q_alt_min + d_alt*(self.q_alt_max - self.q_alt_min)
         self.q_vx = self.q_velo_min + d_vx*(self.q_velo_max - self.q_velo_min)
         self.q_vy = self.q_velo_min + d_vy*(self.q_velo_max - self.q_velo_min)
         self.q_vz = self.q_vz_min + d_vz*(self.q_vz_max - self.q_vz_min)
-        self.r_x = self.r_pose_max - d_x*(self.r_pose_max - self.r_pose_min)
-        self.r_y = self.r_pose_max - d_y*(self.r_pose_max - self.r_pose_min)
-        self.r_alt = self.r_alt_max - d_alt*(self.r_alt_max - self.r_alt_min)
+        self.r_x = self.r_x_max - d_x*(self.r_x_max - self.r_x_min)
+        self.r_y = self.r_y_max - d_y*(self.r_y_max - self.r_y_min)
+        self.r_alt = self.r_alt_max - (d_alt/10)*(self.r_alt_max - self.r_alt_min)
 
-        self.prev_x_error_mag = x_error_mag.copy()
-        self.prev_y_error_mag = y_error_mag.copy()
-        self.prev_alt_error_mag = alt_error_mag.copy()
-        self.prev_vx_error_mag = vx_error_mag.copy()
-        self.prev_vy_error_mag = vy_error_mag.copy()
-        self.prev_vz_error_mag = vz_error_mag.copy()
+        self.prev_x_error_mag = x_error.copy()
+        self.prev_y_error_mag = y_error.copy()
+        self.prev_alt_error_mag = z_error.copy()
+        self.prev_vx_error_mag = vx_error.copy()
+        self.prev_vy_error_mag = vy_error.copy()
+        self.prev_vz_error_mag = vz_error.copy()
 
         self.prev_d_x = d_x.copy()
         self.prev_d_y = d_y.copy()
@@ -186,19 +187,22 @@ class FuzzyLogicControl_Position:
         self.weights_MPC_pub.publish(weights_msg)
 
     def velo_actual_callback(self, msg:TwistStamped):
-        self.velocity_actual = np.array([msg.twist.linear.x, msg.twist.linear.y, msg.twist.linear.z])
+        # ENU -> NED
+        self.velocity_actual = np.array([msg.twist.linear.y, msg.twist.linear.x, -msg.twist.linear.z])
         self.angular_actual = np.array([msg.twist.angular.x, msg.twist.angular.y, msg.twist.angular.z])
 
     def pose_desired_callback(self, msg:PoseStamped):
-        self.position_desired = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z])
+        # ENU -> NED
+        self.position_desired = np.array([msg.pose.position.y, msg.pose.position.x, -msg.pose.position.z])
         self.orientation_desired_quat= np.array([msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z, msg.pose.orientation.w])
         self.orientation_desired_euler = euler_from_quaternion(self.orientation_desired_quat)
 
     def velo_desired_callback(self, msg:TwistStamped):
-        self.velocity_desired = np.array([msg.twist.linear.x, msg.twist.linear.y, msg.twist.linear.z])
+        # ENU -> NED
+        self.velocity_desired = np.array([msg.twist.linear.y, msg.twist.linear.x, -msg.twist.linear.z])
         self.angular_desired = np.array([msg.twist.angular.x, msg.twist.angular.y, msg.twist.angular.z])
 
-    def generate_rules(self, error_ante, error_avg_ante, out_mem,table=None):
+    def generate_rules(self, error_ante, error_avg_ante, out_mem,table):
         rules = []
         for i, e_label in enumerate(self.flc_labels):
             for j, de_label in enumerate(self.flc_labels):
@@ -212,8 +216,8 @@ class FuzzyLogicControl_Position:
         # ANTECEDANT
         error_min = -1.0
         error_max = 1.0
-        d_min = -0.1
-        d_max = 0.1
+        d_min = -0.25
+        d_max = 0.25
         pose_error_ante = ctrl.Antecedent(np.linspace(error_min, error_max, 200), 'pose_error')
         d_pose_error_ante = ctrl.Antecedent(np.linspace(error_min, error_max, 200), 'd_pose_error')
 
@@ -246,8 +250,8 @@ class FuzzyLogicControl_Position:
     def _build_flc_alt(self):
         error_min = -1.0
         error_max = 1.0
-        d_min = -0.1
-        d_max = 0.1
+        d_min = -0.25
+        d_max = 0.25
         alt_error_ante = ctrl.Antecedent(np.linspace(error_min, error_max, 200), 'alt_error')
         d_alt_error_ante = ctrl.Antecedent(np.linspace(error_min, error_max, 200), 'd_alt_error')
 
@@ -280,8 +284,8 @@ class FuzzyLogicControl_Position:
     def _build_flc_velo(self):
         error_min = -1.0
         error_max = 1.0
-        d_min = -0.1
-        d_max = 0.1
+        d_min = -0.25
+        d_max = 0.25
         # ANTECEDANT
         velo_error_ante = ctrl.Antecedent(np.linspace(error_min, error_max, 200), 'velo_error')
         d_velo_error_ante = ctrl.Antecedent(np.linspace(error_min, error_max, 200), 'd_velo_error')
@@ -315,8 +319,8 @@ class FuzzyLogicControl_Position:
     def _build_flc_vz(self):
         error_min = -1.0
         error_max = 1.0
-        d_min = -0.1
-        d_max = 0.1
+        d_min = -0.25
+        d_max = 0.25
         # ANTECEDANT
         vz_error_ante = ctrl.Antecedent(np.linspace(error_min, error_max, 200), 'vz_error')
         d_vz_error_ante = ctrl.Antecedent(np.linspace(error_min, error_max, 200), 'd_vz_error')
@@ -354,10 +358,6 @@ class FuzzyLogicControl_Position:
 
         del_d = sim.output[label[2]]
         return del_d
-    
-    def lpf(self, raw, prev_filt, alpha=0.9):
-        filtered = alpha*(prev_filt)+(1-alpha)*raw
-        return filtered
     
 if __name__ == "__main__":
     rospy.init_node("flc_hexacopter")

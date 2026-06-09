@@ -448,8 +448,8 @@ class DataLoggerLOSGuidance(object):
         if self._shutting_down:
             return
         
-        if len(msg.data) >= 3:
-            self.dist = np.array(msg.data[:3])
+        if len(msg.data) >= 6:
+            self.dist = np.array(msg.data[:6])
         
     def K_callback(self,msg:Float32MultiArray):
         if self._shutting_down:

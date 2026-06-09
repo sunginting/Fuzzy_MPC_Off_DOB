@@ -24,6 +24,10 @@ class FuzzyLogicControl:
         self.pose_sim = self._build_flc_pose()
         self.alt_sim = self._build_flc_alt()
 
+        self.K_x = 0.9
+        self.K_y = 0.9
+        self.K_z = 0.95
+
         self.prev_K_x = 0.0
         self.prev_K_y = 0.0
         self.prev_K_alt = 0.0
@@ -39,20 +43,18 @@ class FuzzyLogicControl:
         self.previous_time = 0.0
         self.current_time = 0.0
 
-        self.buffer_size = 50
-        self.alt_buffer = []
-
         # PUBLISH
         self.dist_gain_pub = rospy.Publisher('/flc/disturbance_gain', Float32MultiArray, queue_size=10)
 
         # SUBSCRIBE
         self.pose_actual_sub = rospy.Subscriber('/mavros/local_position/pose', PoseStamped, self.pose_actual_callback, queue_size=10)
         self.pose_desired_sub = rospy.Subscriber("/trajectory/ref_pose", PoseStamped, self.pose_desired_callback, queue_size=10)
-        self.velo_actual_sub = rospy.Subscriber("/trajectory/ref_vel", TwistStamped, self.velo_actual_callback,queue_size=10)
+        self.velo_actual_sub = rospy.Subscriber("/mavros/local_position/velocity_local", TwistStamped, self.velo_actual_callback,queue_size=10)
         self.velo_desired_sub = rospy.Subscriber("/trajectory/ref_vel", TwistStamped, self.velo_desired_callback,queue_size=10)
 
     def pose_actual_callback(self, msg:PoseStamped):
-        self.position_actual = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z])
+        # ENU -> NED
+        self.position_actual = np.array([msg.pose.position.y, msg.pose.position.x, -msg.pose.position.z])
         self.orientation_actual_quat= np.array([msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z, msg.pose.orientation.w])
         self.orientation_actual_euler = euler_from_quaternion(self.orientation_actual_quat)
 
@@ -61,17 +63,13 @@ class FuzzyLogicControl:
             self.previous_time = self.current_time
             return
 
-        raw_error_x = self.position_desired[0]-self.position_actual[0]
-        raw_error_y = self.position_desired[1]-self.position_actual[1]
-        raw_error_z = self.position_desired[2]-self.position_actual[2]
+        error_x = self.position_desired[0]-self.position_actual[0]
+        error_y = self.position_desired[1]-self.position_actual[1]
+        error_z = self.position_desired[2]-self.position_actual[2]
 
-        error_x = self.lpf(raw_error_x, self.previous_x_error)
-        error_y = self.lpf(raw_error_y, self.previous_y_error)
-        error_z = self.lpf(raw_error_z, self.previous_alt_error)
-
-        x_error_norm = np.clip(error_x/3.0, -1.0, 1.0)
-        y_error_norm = np.clip(error_y/3.0, -1.0, 1.0)
-        alt_error_norm = np.clip(error_z/0.15, -1.0, 1.0)
+        x_error_norm = np.clip(error_x/1.5, -1.0, 1.0)
+        y_error_norm = np.clip(error_y/1.5, -1.0, 1.0)
+        alt_error_norm = np.clip(error_z/0.2, -1.0, 1.0)
 
         dt = self.current_time - self.previous_time
         if dt <= 0:
@@ -83,40 +81,43 @@ class FuzzyLogicControl:
 
         d_err_x_norm = np.clip(self.d_error_x/0.75, -1.0, 1.0)
         d_err_y_norm = np.clip(self.d_error_y/0.75, -1.0, 1.0)
-        d_err_alt_norm = np.clip(self.d_error_alt/0.1, -1.0, 1.0)
+        d_err_alt_norm = np.clip(self.d_error_alt/0.1, -1.0, 0.5)
 
         del_K_x = self._run_flc_pose(x_error_norm, d_err_x_norm)
         del_K_y = self._run_flc_pose(y_error_norm, d_err_y_norm)
         del_K_alt = self._run_flc_alt(alt_error_norm, d_err_alt_norm)
 
-        K_x = np.clip(self.prev_K_x + del_K_x, 0, 0.4)
-        K_y = np.clip(self.prev_K_y + del_K_y, 0, 0.4)
-        K_alt = np.clip(self.prev_K_alt + del_K_alt, 0, 0.4)
+        self.K_x = np.clip(self.prev_K_x + del_K_x, 0.75, 0.95)
+        self.K_y = np.clip(self.prev_K_y + del_K_y, 0.75, 0.95)
+        self.K_alt = np.clip(self.prev_K_alt + del_K_alt, 0.75, 0.95)
 
         dist_gain_msg = Float32MultiArray()
-        dist_gain_msg.data = [K_x, K_y, K_alt]
+        dist_gain_msg.data = [self.K_x, self.K_y, self.K_alt]
         self.dist_gain_pub.publish(dist_gain_msg)
 
         self.previous_x_error = error_x.copy()
         self.previous_y_error = error_y.copy()
         self.previous_alt_error = error_z.copy()
 
-        self.prev_K_x = K_x.copy()
-        self.prev_K_y = K_y.copy()
-        self.prev_K_alt = K_alt.copy()
+        self.prev_K_x = self.K_x.copy()
+        self.prev_K_y = self.K_y.copy()
+        self.prev_K_alt = self.K_alt.copy()
 
         self.previous_time = self.current_time
 
     def pose_desired_callback(self, msg:PoseStamped):
-        self.position_desired = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z])
+        # ENU -> NED
+        self.position_desired = np.array([msg.pose.position.y, msg.pose.position.x, -msg.pose.position.z])
         self.orientation_desired_quat= np.array([msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z, msg.pose.orientation.w])
         self.orientation_desired_euler = euler_from_quaternion(self.orientation_desired_quat)
 
     def velo_actual_callback(self, msg:TwistStamped):
-        self.velocity_actual = np.array([msg.twist.linear.x, msg.twist.linear.y, msg.twist.linear.z])
+        # ENU -> NED
+        self.velocity_actual = np.array([msg.twist.linear.y, msg.twist.linear.x, -msg.twist.linear.z])
 
     def velo_desired_callback(self, msg:TwistStamped):
-        self.velocity_desired = np.array([msg.twist.linear.x, msg.twist.linear.y, msg.twist.linear.z])
+        # ENU -> NED
+        self.velocity_desired = np.array([msg.twist.linear.y, msg.twist.linear.x, -msg.twist.linear.z])
 
     def generate_rules(self, error_ante, d_error_ante, out_mem, table=None):
         rules = []
@@ -131,8 +132,8 @@ class FuzzyLogicControl:
         error_min = -1.0
         error_max = 1.0
 
-        k_min = -0.05
-        k_max = 0.05
+        k_min = -0.25
+        k_max = 0.25
         # ANTECEDANT
         pose_error_ante = ctrl.Antecedent(np.linspace(error_min, error_max, 200), 'pose_error')
         d_pose_error_ante = ctrl.Antecedent(np.linspace(error_min, error_max, 200), 'd_pose_error')
@@ -167,9 +168,8 @@ class FuzzyLogicControl:
         error_min = -1.0
         error_max = 1.0
 
-        k_min = -0.05
-        k_max = 0.05
-
+        k_min = -0.25
+        k_max = 0.25
         # ANTECEDANT
         alt_error_ante = ctrl.Antecedent(np.linspace(error_min, error_max, 200), 'alt_error')
         d_alt_error_ante = ctrl.Antecedent(np.linspace(error_min, error_max, 200), 'd_alt_error')
@@ -215,10 +215,6 @@ class FuzzyLogicControl:
 
         K_alt = self.alt_sim.output['K_alt']
         return K_alt
-    
-    def lpf(self, raw, prev_filt, alpha=0.9):
-        filtered = alpha*(prev_filt)+(1-alpha)*raw
-        return filtered
 
 if __name__ == "__main__":
     rospy.init_node("flc_hexacopter")

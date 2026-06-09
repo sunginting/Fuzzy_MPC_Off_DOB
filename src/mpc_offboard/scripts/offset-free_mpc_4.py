@@ -41,8 +41,6 @@ class PositionMPC:
             40.0, 40.0, 100.0,   # posisi
             20.0, 20.0, 12.0     # kecepatan
         ])
-
-        self.R_def = np.diag([1.0, 1.0, 0.10])     # penalti besarnya u
         self.R_delta = np.diag([0.2, 0.2, 0.06])  # penalti perubahan u
 
         self.Q_flc = None
@@ -52,18 +50,13 @@ class PositionMPC:
 
         self.A_stack = np.zeros((self.y_hor*self.nx, self.nx))
         self.B_stack = np.zeros((self.y_hor*self.nx, self.c_hor*self.nu))
+        self.L_stack = np.zeros((self.y_hor*self.nx, self.y_hor*self.nx))
         self.R_delta_bar = np.zeros((self.c_hor*self.nu, self.c_hor*self.nu))
         self.H = np.zeros((self.c_hor*self.nu, self.c_hor*self.nu))
 
-        self.K = np.diag([0.07, 0.07, 0.07, 0.0, 0.0, 0.0])
-        self.dist_max = np.array([0.25, 0.25, 0.1, 0.0, 0.0, 0.0])
-
+        self.K = 0.6*np.eye(self.nx)
         self.dist_x = np.zeros(self.nx)
         self.prev_dist_x = np.zeros(self.nx)
-
-        # Moving-window disturbance integrator: sum of last N increments
-        self.dist_window_size = 500
-        self.dist_window = deque(maxlen=self.dist_window_size)
 
         self.u = np.zeros(self.nu)
         self.u_prev = np.zeros(self.nu)
@@ -98,29 +91,33 @@ class PositionMPC:
                 for _ in range(j-k):
                     A_power = A_power @ self.A_model
                 self.B_stack[j*self.nx:(j+1)*self.nx, k*self.nu:(k+1)*self.nu] = A_power @ self.B_model
+
+        for j in range(self.y_hor):
+            for k in range(j+1):
+                self.L_stack[j*self.nx:(j+1)*self.nx, k*self.nx:(k+1)*self.nx] = \
+                    self.C_model @ np.linalg.matrix_power(self.A_model, j-k)
         self.qp_matrices()
 
     def qp_matrices(self):
         Q_bar = np.kron(np.eye(self.y_hor), self.active_Q)
-        R_bar = np.kron(np.eye(self.c_hor), self.active_R)
 
         R_delta_bar = np.zeros((self.c_hor*self.nu, self.c_hor*self.nu))
         for i in range(self.c_hor):
             # Diagonal: R_delta for endpoints, 2*R_delta for middle terms
             if i == 0 or i == self.c_hor - 1:
                 R_delta_bar[i*self.nu:(i+1)*self.nu,
-                            i*self.nu:(i+1)*self.nu] = self.R_delta
+                            i*self.nu:(i+1)*self.nu] = self.active_R
             else:
                 R_delta_bar[i*self.nu:(i+1)*self.nu,
-                            i*self.nu:(i+1)*self.nu] = 2 * self.R_delta
+                            i*self.nu:(i+1)*self.nu] = 2 * self.active_R
             # Off-diagonals
             if i > 0:
                 R_delta_bar[i*self.nu:(i+1)*self.nu,
-                            (i-1)*self.nu:i*self.nu] = -self.R_delta
+                            (i-1)*self.nu:i*self.nu] = -self.active_R
                 R_delta_bar[(i-1)*self.nu:i*self.nu,
-                            i*self.nu:(i+1)*self.nu] = -self.R_delta
+                            i*self.nu:(i+1)*self.nu] = -self.active_R
 
-        H_mat = self.B_stack.T @ Q_bar @ self.B_stack + R_bar + R_delta_bar
+        H_mat = self.B_stack.T @ Q_bar @ self.B_stack + R_delta_bar
         self.H = (H_mat + H_mat.T) / 2.0
 
         # Verify positive definiteness
@@ -145,29 +142,14 @@ class PositionMPC:
         ref = np.tile(x_ref, self.y_hor)
         x_nom, _ = self.nominal_model(self.x_nom_prev, self.u_prev)
 
-        err = x_meas - x_nom
-        if abs(err[3]) > 0.5:
-            err[3] = 0.0
-
-        # Per-step disturbance increment. Anti-windup: only integrate when at
-        # least one actuator is unsaturated, else push zero so the window slides.
-        if np.any(np.abs(self.u_prev) < self.a_max - 0.0001):
-            delta = self.K @ err
-        else:
-            delta = np.zeros(self.nx)
-        self.dist_window.append(delta)
-
-        # Moving-window integrator: disturbance = sum of last N increments
-        self.dist_x = np.clip(np.sum(np.array(self.dist_window), axis=0),
-                              -self.dist_max, self.dist_max)
-
-        dist_x_stack = np.tile(self.dist_x, self.y_hor)
+        self.dist_x = self.K@(x_meas - x_nom)
+        dist_x_tile = np.tile(self.dist_x, self.y_hor)
+        dist_x_stack = self.L_stack@dist_x_tile
         dist_x_msg = Float32MultiArray()
         dist_x_msg.data = self.dist_x.flatten().tolist()
         self.est_pub.publish(dist_x_msg)
-        self.prev_dist_x = self.dist_x.copy()
 
-        err_pred = ref - self.A_stack@x_meas + dist_x_stack
+        err_pred = ref - self.A_stack@x_meas - dist_x_stack
 
         u_prev_ext = np.tile(self.u_prev, self.c_hor)
 
@@ -202,7 +184,7 @@ class PositionMPC:
 
         except Exception as e:
             rospy.logwarn(f"MPC QP failed: {e}")
-            self._publish_active_weight
+            self._publish_active_weight()
             return np.zeros(self.nu)
         
     def weight_callback(self, msg: Float32MultiArray):
@@ -211,7 +193,7 @@ class PositionMPC:
             return
         weights_recieved = msg.data
         self.Q_flc = np.diag(weights_recieved[0:6])
-        self.R_flc = np.diag(weights_recieved[6:9])
+        # self.R_flc = np.diag(weights_recieved[6:9])
         self.qp_matrices()
 
     @property
@@ -220,14 +202,18 @@ class PositionMPC:
 
     @property
     def active_R(self):
-        return self.R_flc if self.R_flc is not None else self.R_def
+        return self.R_flc if self.R_flc is not None else self.R_delta
     
     def _publish_active_weight(self):
         weights_used = Float32MultiArray()
         weights_used.data = list(np.concatenate((np.diag(self.active_Q), np.diag(self.active_R))))
         self.weight_pub.publish(weights_used)
+
+    def lpf(self, prev, raw, alpha=0.9):
+        filt = alpha*prev + (1-alpha)*raw
+        return filt
         
-def acceleration_to_attitude_thrust_px4(accel_ned, yaw_desired, hover_thrust=0.35, gravity=9.81):
+def acceleration_to_attitude_thrust_px4(accel_ned, yaw_desired, hover_thrust=0.38, gravity=9.81):
     ax, ay, az = accel_ned
 
     ax = np.clip(ax, -8.0, 8.0)
@@ -462,7 +448,7 @@ class MPCTrajectoryFollowerManualROS1:
         self.accel_pub.publish(accel_msg)
 
         roll, pitch, yaw, thrust, R = acceleration_to_attitude_thrust_px4(
-            acc, self.ref_yaw, hover_thrust=0.35, gravity=9.81
+            acc, self.ref_yaw, hover_thrust=0.38, gravity=9.81
         )
 
         self.attitude_roll = roll
