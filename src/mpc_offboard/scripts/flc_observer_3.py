@@ -25,15 +25,15 @@ class FuzzyLogicControl:
 
         self.sim = self._build_flc_pose()
 
-        self.Q_x = 40
-        self.Q_y = 40
-        self.Q_alt = 100
-        self.Q_vx = 20
-        self.Q_vy = 20
+        self.Q_x = 50
+        self.Q_y = 50
+        self.Q_alt = 110
+        self.Q_vx = 8
+        self.Q_vy = 8
         self.Q_vz = 12
 
-        self.R_delta_x = 0.12
-        self.R_delta_y = 0.12
+        self.R_delta_x = 0.1
+        self.R_delta_y = 0.1
         self.R_delta_z = 0.06
 
         self.K_x = 0.9
@@ -43,13 +43,13 @@ class FuzzyLogicControl:
         self.K_vy = 0.9
         self.K_vz = 0.95
 
-        self.Q_max = np.array([75.0, 75.0, 130.0, 10.0, 10.0, 12.0])
-        self.Q_min = np.array([35.0, 35.0, 100.0, 35.0, 35.0, 7.0])
-        self.R_delta_max = np.array([0.12, 0.12, 0.06])
-        self.R_delta_min = np.array([0.08, 0.08, 0.02])
+        self.Q_max = np.array([80.0, 80.0, 130.0, 10.0, 10.0, 12.0])
+        self.Q_min = np.array([35.0, 35.0, 100.0, 3.25, 3.25, 7.0])
+        self.R_delta_max = np.array([0.13, 0.13, 0.07])
+        self.R_delta_min = np.array([0.05, 0.05, 0.02])
 
         self.K_max = np.array([0.85, 0.85, 0.9, 0.7, 0.7, 0.6])
-        self.K_min = np.array([0.2, 0.2, 0.2, 0.0, 0.0, 0.0])
+        self.K_min = np.array([0.2, 0.2, 0.2, 0.01, 0.01, 0.01])
 
         self.d_error_x = 0.0
         self.d_error_y = 0.0
@@ -114,11 +114,11 @@ class FuzzyLogicControl:
         alpha_min = 0.0
         alpha_max = 1.0
         # ANTECEDANT
-        input_1 = ctrl.Antecedent(np.linspace(input_min, input_max, 200), 'input_1')
-        input_2 = ctrl.Antecedent(np.linspace(input_min, input_max, 200), 'input_2')
+        input_1 = ctrl.Antecedent(np.linspace(input_min, input_max, 300), 'input_1')
+        input_2 = ctrl.Antecedent(np.linspace(input_min, input_max, 300), 'input_2')
 
         # CONSEQUENT
-        alpha = ctrl.Consequent(np.linspace(alpha_min, alpha_max, 200), 'alpha')
+        alpha = ctrl.Consequent(np.linspace(alpha_min, alpha_max, 300), 'alpha')
 
         # MEMBERSHIP FUNCTION
         input_1['NB'] = fuzz.trimf(input_1.universe, [input_min, input_min, (1/2)*input_min])
@@ -159,9 +159,9 @@ class FuzzyLogicControl:
         error_y = self.position_desired[1]-self.position_actual[1]
         error_z = self.position_desired[2]-self.position_actual[2]
 
-        x_error_norm = np.clip(error_x/1, -1.0, 1.0)
-        y_error_norm = np.clip(error_y/1, -1.0, 1.0)
-        alt_error_norm = np.clip(error_z/0.15, -1.0, 1.0)
+        x_error_norm = np.clip(error_x/1.0, -1.0, 1.0)
+        y_error_norm = np.clip(error_y/1.0, -1.0, 1.0)
+        alt_error_norm = np.clip(error_z/0.2, -1.0, 1.0)
 
         dt = self.current_time - self.previous_time
         if dt <= 0:
@@ -171,9 +171,9 @@ class FuzzyLogicControl:
             self.d_error_y = (error_y - self.previous_y_error) / dt
             self.d_error_alt = (error_z - self.previous_alt_error) / dt
 
-        d_err_x_norm = np.clip(self.d_error_x/0.55, -1.0, 1.0)
-        d_err_y_norm = np.clip(self.d_error_y/0.55, -1.0, 1.0)
-        d_err_alt_norm = np.clip(self.d_error_alt/0.1, -1.0, 1.0)
+        d_err_x_norm = np.clip(self.d_error_x/0.51, -1.0, 1.0)
+        d_err_y_norm = np.clip(self.d_error_y/0.51, -1.0, 1.0)
+        d_err_alt_norm = np.clip(self.d_error_alt/0.2, -1.0, 1.0)
 
         alpha_x = self._run_flc(x_error_norm, d_err_x_norm)
         alpha_y = self._run_flc(y_error_norm, d_err_y_norm)

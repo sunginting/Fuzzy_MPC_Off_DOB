@@ -213,7 +213,7 @@ class PositionMPC:
         filt = alpha*prev + (1-alpha)*raw
         return filt
         
-def acceleration_to_attitude_thrust_px4(accel_ned, yaw_desired, hover_thrust=0.355, gravity=9.81):
+def acceleration_to_attitude_thrust_px4(accel_ned, yaw_desired, hover_thrust=0.351, gravity=9.81):
     ax, ay, az = accel_ned
 
     ax = np.clip(ax, -8.0, 8.0)
@@ -448,7 +448,7 @@ class MPCTrajectoryFollowerManualROS1:
         self.accel_pub.publish(accel_msg)
 
         roll, pitch, yaw, thrust, R = acceleration_to_attitude_thrust_px4(
-            acc, self.ref_yaw, hover_thrust=0.355, gravity=9.81
+            acc, self.ref_yaw, hover_thrust=0.351, gravity=9.81
         )
 
         self.attitude_roll = roll
