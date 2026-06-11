@@ -107,6 +107,7 @@ class DataLoggerLOSGuidance(object):
             # FLC weights (MPC Q and R matrices)
             'flc_q_x', 'flc_q_y', 'flc_q_z', 'flc_q_vx', 'flc_q_vy', 'flc_q_vz',
             'flc_r_x', 'flc_r_y', 'flc_r_z',
+            'flc_r_delta_x', 'flc_r_delta_y', 'flc_r_delta_z',
             'avg_error_pose', 'avg_error_att', 'avg_error_velo', 'avg_error_vz'
         ]
 
@@ -147,7 +148,7 @@ class DataLoggerLOSGuidance(object):
         self.current_trajectory_status = "UNKNOWN"
 
         # FLC weights (MPC Q and R matrices)
-        self.flc_weights = np.zeros(9)  # [q_x, q_y, q_z, q_vx, q_vy, q_vz, r_x, r_y, r_z]
+        self.flc_weights = np.zeros(12)  # [q_x, q_y, q_z, q_vx, q_vy, q_vz, r_x, r_y, r_z]
 
         # AVG ERR
         self.previous_time = 0.0
@@ -434,8 +435,8 @@ class DataLoggerLOSGuidance(object):
             return
         
         # msg.data = [q_x, q_y, q_z, q_vx, q_vy, q_vz, r_x, r_y, r_z]
-        if len(msg.data) >= 9:
-            self.flc_weights = np.array(msg.data[:9])
+        if len(msg.data) >= 12:
+            self.flc_weights = np.array(msg.data[:12])
 
     def avg_error_callback(self, msg:Float32MultiArray):
         if self._shutting_down:
@@ -648,6 +649,9 @@ class DataLoggerLOSGuidance(object):
             'flc_r_x': float(self.flc_weights[6]),
             'flc_r_y': float(self.flc_weights[7]),
             'flc_r_z': float(self.flc_weights[8]),
+            'flc_r_delta_x': float(self.flc_weights[9]),
+            'flc_r_delta_y': float(self.flc_weights[10]),
+            'flc_r_delta_z': float(self.flc_weights[11]),
 
             'avg_error_pose': float(self.avg_error[0]),
             'avg_error_att': float(self.avg_error[1]),

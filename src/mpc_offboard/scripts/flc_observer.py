@@ -87,9 +87,9 @@ class FuzzyLogicControl:
         del_K_y = self._run_flc_pose(y_error_norm, d_err_y_norm)
         del_K_alt = self._run_flc_alt(alt_error_norm, d_err_alt_norm)
 
-        self.K_x = np.clip(self.prev_K_x + del_K_x, 0.75, 0.95)
-        self.K_y = np.clip(self.prev_K_y + del_K_y, 0.75, 0.95)
-        self.K_alt = np.clip(self.prev_K_alt + del_K_alt, 0.75, 0.95)
+        self.K_x = np.clip(self.prev_K_x + del_K_x, 0.1, 0.95)
+        self.K_y = np.clip(self.prev_K_y + del_K_y, 0.1, 0.95)
+        self.K_alt = np.clip(self.prev_K_alt + del_K_alt, 0.1, 0.95)
 
         dist_gain_msg = Float32MultiArray()
         dist_gain_msg.data = [self.K_x, self.K_y, self.K_alt]
@@ -119,7 +119,7 @@ class FuzzyLogicControl:
         # ENU -> NED
         self.velocity_desired = np.array([msg.twist.linear.y, msg.twist.linear.x, -msg.twist.linear.z])
 
-    def generate_rules(self, error_ante, d_error_ante, out_mem, table=None):
+    def generate_rules(self, error_ante, d_error_ante, out_mem, table):
         rules = []
         for i, e_label in enumerate(self.flc_labels):
             for j, de_label in enumerate(self.flc_labels):
