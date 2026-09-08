@@ -21,7 +21,7 @@ class LOSGuidanceTrajectoryPublisher(object):
         # Lookahead distance (delta)
         self.lookahead_distance = rospy.get_param("~lookahead_distance", 2.0)  # meter
         self.lookahead_min = rospy.get_param("~lookahead_min", 1.0)             # meter
-        self.lookahead_max = rospy.get_param("~lookahead_max", 5.0)             # meter
+        self.lookahead_max = rospy.get_param("~lookahead_max", 3.0)             # meter
         self.lookahead_adaptive = rospy.get_param("~lookahead_adaptive", True)
         self.lookahead_speed_gain = rospy.get_param("~lookahead_speed_gain", 0.5)  # delta = delta_base + gain * speed
         
@@ -29,6 +29,9 @@ class LOSGuidanceTrajectoryPublisher(object):
         self.los_integral_gain = rospy.get_param("~los_integral_gain", 0.1)
         self.cross_track_integral = 0.0
         self.cross_track_integral_max = rospy.get_param("~cross_track_integral_max", 2.0)
+        # ILOS (Lekkas & Fossen eq. 81-82): kappa = design param penentu Ki = Kp*kappa,
+        # dengan Kp = 1/lookahead_distance. kappa kecil -> aksi integral lembut.
+        self.ilos_kappa = rospy.get_param("~ilos_kappa", 20.0)
         
         # Reference speed
         self.ref_speed = rospy.get_param("~ref_speed", 2.0)  # m/s
@@ -45,7 +48,7 @@ class LOSGuidanceTrajectoryPublisher(object):
 
         # Hover / gate params
         self.hover_altitude = rospy.get_param("~hover_altitude", 2.5)   # ENU +up (m)
-        self.alt_tolerance = rospy.get_param("~alt_tolerance", 0.3)     # m
+        self.alt_tolerance = rospy.get_param("~alt_tolerance", 0.5)     # m
         self.hover_stable_time = rospy.get_param("~hover_stable_time", 1.0)  # s
         self.gate_on_altitude = rospy.get_param("~gate_on_altitude", True)
 
@@ -384,7 +387,7 @@ class LOSGuidanceTrajectoryPublisher(object):
         rospy.loginfo("Total path length    : %.2f m", self.total_path_length)
         rospy.loginfo("Lookahead distance   : %.2f m (adaptive=%s)", 
                      self.lookahead_distance, "Yes" if self.lookahead_adaptive else "No")
-        rospy.loginfo("LOS integral gain    : %.3f", self.los_integral_gain)
+        rospy.loginfo("ILOS kappa           : %.3f (Kp=1/delta, Ki=Kp*kappa)", self.ilos_kappa)
         rospy.loginfo("Loop trajectory      : %s", "Yes" if self.loop_trajectory else "No")
         rospy.loginfo("Hover altitude       : %.2f m ENU", self.hover_altitude)
         rospy.loginfo("Altitude gate        : %s", "ON" if self.gate_on_altitude else "OFF")
@@ -407,8 +410,8 @@ class LOSGuidanceTrajectoryPublisher(object):
     # ======================================================================
     # LOS GUIDANCE ALGORITHM
     # ======================================================================
-    def compute_los_guidance(self, pos_ned):
-        
+    def compute_los_guidance(self, pos_ned, dt):
+
         if self.positions is None or len(self.positions) < 2:
             return pos_ned, pos_ned, np.zeros(3), 0.0, 0.0, 0.0
 
@@ -508,27 +511,32 @@ class LOSGuidanceTrajectoryPublisher(object):
         p1_los = self.positions[los_seg_idx + 1]
         los_point_ned = (1.0 - tau_los) * p0_los + tau_los * p1_los
         
-        # 5. Hitung LOS angle (yaw reference) - BASIC LOS tanpa integral
-        # LOS vector dari posisi saat ini ke lookahead point
+        # 5. Hitung LOS vector ke lookahead point (dipakai untuk velocity reference)
         los_vec_xy = los_point_ned[:2] - pos
         los_dist_xy = np.linalg.norm(los_vec_xy)
+
+        gamma_p = np.arctan2(seg_vec[1], seg_vec[0])
+        ye = -cross_track_signed
+
+        yint = self.cross_track_integral
+        yint_dot = (ye * delta) / (delta * delta + (ye + self.ilos_kappa * yint) ** 2)
+        yint += dt * yint_dot
+        # Saturasi tambahan sebagai pengaman
+        yint = float(np.clip(yint, -self.cross_track_integral_max, self.cross_track_integral_max))
+        self.cross_track_integral = yint
+
+        Kp = 1.0 / delta if delta > 1e-6 else 0.0
+        Ki = Kp * self.ilos_kappa
+
+        chi_d = gamma_p - np.arctan(((Kp*ye)+(Ki*yint)), delta)
+
+        # LOS vector ke lookahead point (hanya untuk info/visualisasi)
+        los_vec_xy = los_point_ned[:2] - pos
+        los_dist_xy = np.linalg.norm(los_vec_xy)    
         
-        if los_dist_xy > 1e-6:
-            # Basic LOS angle: arctan2(E, N) untuk NED frame
-            los_angle = np.arctan2(los_vec_xy[1], los_vec_xy[0])
-        else:
-            # Fallback ke path direction
-            los_angle = np.arctan2(seg_vec[1], seg_vec[0])
-        
-        # Yaw reference = LOS angle
-        yaw_ref = los_angle
-        
-        # 6. Hitung velocity reference
-        # Velocity magnitude = ref_speed (konstan)
-        if los_dist_xy > 1e-6:
-            vel_xy = (los_vec_xy / los_dist_xy) * self.ref_speed
-        else:
-            vel_xy = np.zeros(2)
+        # Untuk multirotor: hidung (yaw) diarahkan mengikuti course.
+        yaw_ref = chi_d
+        vel_xy = self.ref_speed * np.array([np.cos(chi_d), np.sin(chi_d)])
         
         # Vertical velocity (3D LOS)
         altitude_error = los_point_ned[2] - pos_z
@@ -545,6 +553,14 @@ class LOSGuidanceTrajectoryPublisher(object):
     def timer_cb(self, event):
         if not self.traj_initialized or self.total_path_length <= 0.0:
             return
+
+        # dt aktual dari timer (dipakai integrator ILOS). Fallback ke periode timer.
+        if event.last_real is not None:
+            dt = (event.current_real - event.last_real).to_sec()
+        else:
+            dt = 0.02
+        if dt <= 0.0 or dt > 0.5:
+            dt = 0.02
 
         # --- Altitude gate check ---
         if self.mode == "WAIT_ALT" and self.gate_on_altitude and self.pose_received:
@@ -615,7 +631,7 @@ class LOSGuidanceTrajectoryPublisher(object):
             else:
                 # Compute LOS guidance (normal tracking)
                 los_point_ned, desired_point_ned, vel_ref_ned, yaw_ref, cross_track_error, along_track = \
-                    self.compute_los_guidance(pos_ned)
+                    self.compute_los_guidance(pos_ned, dt)
                 
                 # Check trajectory completion
                 if not self.loop_trajectory:

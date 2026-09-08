@@ -130,7 +130,7 @@
     </node>
 
     <!-- ============== Data Logger ============== -->
-    <node pkg="mpc_offboard" type="data_logger_offset-mpc_flc.py" 
+    <node pkg="mpc_offboard" type="data_logger_los_guidance.py" 
           name="los_data_logger" output="screen">
         <param name="output_dir" value="$(arg log_dir)"/>
         <param name="log_rate_hz" value="$(arg log_rate)"/>

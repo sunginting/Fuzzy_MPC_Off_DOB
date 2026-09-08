@@ -32,9 +32,9 @@ class FuzzyLogicControl:
         self.Q_vy = 8
         self.Q_vz = 12
 
-        self.R_delta_x = 0.1
-        self.R_delta_y = 0.1
-        self.R_delta_z = 0.06
+        self.R_x = 0.6
+        self.R_y = 0.6
+        self.R_alt = 0.06
 
         self.K_x = 0.9
         self.K_y = 0.9
@@ -43,21 +43,27 @@ class FuzzyLogicControl:
         self.K_vy = 0.9
         self.K_vz = 0.95
 
-        self.Q_max = np.array([80.0, 80.0, 130.0, 10.0, 10.0, 12.0])
-        self.Q_min = np.array([35.0, 35.0, 100.0, 3.25, 3.25, 7.0])
-        self.R_delta_max = np.array([0.13, 0.13, 0.07])
-        self.R_delta_min = np.array([0.05, 0.05, 0.02])
+        self.Q_max = np.array([70.0, 70.0, 140.0, 50.0, 50.0, 42.0])
+        self.Q_min = np.array([40.0, 40.0, 110.0, 15.0, 15.0, 7.0])
+        self.R_max = np.array([0.8, 0.8, 0.10])
+        self.R_min = np.array([0.1, 0.1, 0.03])
 
-        self.K_max = np.array([0.85, 0.85, 0.9, 0.7, 0.7, 0.6])
-        self.K_min = np.array([0.2, 0.2, 0.2, 0.01, 0.01, 0.01])
+        # self.K_max = np.array([0.5, 0.5, 0.9, 0.5, 0.5, 0.5])
+        # self.K_min = np.array([0.05, 0.05, 0.1, 0.05, 0.05, 0.05])
 
         self.d_error_x = 0.0
         self.d_error_y = 0.0
         self.d_error_alt = 0.0
+        self.d_error_vx = 0.0
+        self.d_error_vy = 0.0
+        self.d_error_vz = 0.0
 
         self.previous_x_error = 0.0
         self.previous_y_error = 0.0
         self.previous_alt_error = 0.0
+        self.previous_vx_error = 0.0
+        self.previous_vy_error = 0.0
+        self.previous_vz_error = 0.0
 
         self.previous_time = 0.0
         self.current_time = 0.0
@@ -73,7 +79,7 @@ class FuzzyLogicControl:
         self.velo_desired_sub = rospy.Subscriber("/trajectory/ref_vel", TwistStamped, self.velo_desired_callback,queue_size=10)
 
         # TIMER 20 Hz
-        self.timer = rospy.Timer(rospy.Duration(0.1), self.timer_callback)
+        self.timer = rospy.Timer(rospy.Duration(0.5), self.timer_callback)
 
     def timer_callback(self, event):
         self.compute_flc()
@@ -114,11 +120,11 @@ class FuzzyLogicControl:
         alpha_min = 0.0
         alpha_max = 1.0
         # ANTECEDANT
-        input_1 = ctrl.Antecedent(np.linspace(input_min, input_max, 300), 'input_1')
-        input_2 = ctrl.Antecedent(np.linspace(input_min, input_max, 300), 'input_2')
+        input_1 = ctrl.Antecedent(np.linspace(input_min, input_max, 200), 'input_1')
+        input_2 = ctrl.Antecedent(np.linspace(input_min, input_max, 200), 'input_2')
 
         # CONSEQUENT
-        alpha = ctrl.Consequent(np.linspace(alpha_min, alpha_max, 300), 'alpha')
+        alpha = ctrl.Consequent(np.linspace(alpha_min, alpha_max, 200), 'alpha')
 
         # MEMBERSHIP FUNCTION
         input_1['NB'] = fuzz.trimf(input_1.universe, [input_min, input_min, (1/2)*input_min])
@@ -158,10 +164,16 @@ class FuzzyLogicControl:
         error_x = self.position_desired[0]-self.position_actual[0]
         error_y = self.position_desired[1]-self.position_actual[1]
         error_z = self.position_desired[2]-self.position_actual[2]
+        error_vx = self.velocity_desired[0]-self.velocity_actual[0]
+        error_vy = self.velocity_desired[1]-self.velocity_actual[1]
+        error_vz = self.velocity_desired[2]-self.velocity_actual[2]
 
-        x_error_norm = np.clip(error_x/1.0, -1.0, 1.0)
-        y_error_norm = np.clip(error_y/1.0, -1.0, 1.0)
-        alt_error_norm = np.clip(error_z/0.2, -1.0, 1.0)
+        x_error_norm = np.clip(error_x/2.0, -1.0, 1.0)
+        y_error_norm = np.clip(error_y/2.0, -1.0, 1.0)
+        alt_error_norm = np.clip(error_z/0.3, -1.0, 1.0)
+        vx_error_norm = np.clip(error_vx/1.0, -1.0, 1.0)
+        vy_error_norm = np.clip(error_vy/1.0, -1.0, 1.0)
+        vz_error_norm = np.clip(error_vz/0.2, -1.0, 1.0)
 
         dt = self.current_time - self.previous_time
         if dt <= 0:
@@ -170,44 +182,56 @@ class FuzzyLogicControl:
             self.d_error_x = (error_x - self.previous_x_error) / dt
             self.d_error_y = (error_y - self.previous_y_error) / dt
             self.d_error_alt = (error_z - self.previous_alt_error) / dt
+            self.d_error_vx = (error_vx - self.previous_vx_error) / dt
+            self.d_error_vy = (error_vy - self.previous_vy_error) / dt
+            self.d_error_vz = (error_vz - self.previous_vz_error) / dt
 
-        d_err_x_norm = np.clip(self.d_error_x/0.51, -1.0, 1.0)
-        d_err_y_norm = np.clip(self.d_error_y/0.51, -1.0, 1.0)
-        d_err_alt_norm = np.clip(self.d_error_alt/0.2, -1.0, 1.0)
+        d_err_x_norm = np.clip(self.d_error_x/0.75, -1.0, 1.0)
+        d_err_y_norm = np.clip(self.d_error_y/0.75, -1.0, 1.0)
+        d_err_alt_norm = np.clip(self.d_error_alt/0.15, -1.0, 1.0)
+        d_err_vx_norm = np.clip(self.d_error_vx/0.35, -1.0, 1.0)
+        d_err_vy_norm = np.clip(self.d_error_vy/0.35, -1.0, 1.0)
+        d_err_vz_norm = np.clip(self.d_error_vz/0.15, -1.0, 1.0)
 
         alpha_x = self._run_flc(x_error_norm, d_err_x_norm)
         alpha_y = self._run_flc(y_error_norm, d_err_y_norm)
         alpha_z = self._run_flc(alt_error_norm, d_err_alt_norm)
+        alpha_vx = self._run_flc(vx_error_norm, d_err_vx_norm)
+        alpha_vy = self._run_flc(vy_error_norm, d_err_vy_norm)
+        alpha_vz = self._run_flc(vz_error_norm, d_err_vz_norm)
 
-        self.K_x = self.K_min[0] + alpha_x*(self.K_max[0] - self.K_min[0])
-        self.K_y = self.K_min[1] + alpha_y*(self.K_max[1] - self.K_min[1])
-        self.K_alt = self.K_min[2] + alpha_z*(self.K_max[2] - self.K_min[2])
-        self.K_vx = self.K_max[3] - alpha_x*(self.K_max[3] - self.K_min[3])
-        self.K_vy = self.K_max[4] - alpha_y*(self.K_max[4] - self.K_min[4])
-        self.K_vz = self.K_max[5] - alpha_z*(self.K_max[5] - self.K_min[5])
+        # self.K_x = self.K_min[0] + alpha_x*(self.K_max[0] - self.K_min[0])
+        # self.K_y = self.K_min[1] + alpha_y*(self.K_max[1] - self.K_min[1])
+        # self.K_alt = self.K_min[2] + alpha_z*(self.K_max[2] - self.K_min[2])
+        # self.K_vx = self.K_max[3] - alpha_x*(self.K_max[3] - self.K_min[3])
+        # self.K_vy = self.K_max[4] - alpha_y*(self.K_max[4] - self.K_min[4])
+        # self.K_vz = self.K_max[5] - alpha_z*(self.K_max[5] - self.K_min[5])
 
         self.Q_x = self.Q_min[0] + alpha_x*(self.Q_max[0] - self.Q_min[0])
         self.Q_y = self.Q_min[1] + alpha_y*(self.Q_max[1] - self.Q_min[1])
         self.Q_alt = self.Q_min[2] + alpha_z*(self.Q_max[2] - self.Q_min[2])
-        self.Q_vx = self.Q_max[3] - alpha_x*(self.Q_max[3] - self.Q_min[3])
-        self.Q_vy = self.Q_max[4] - alpha_y*(self.Q_max[4] - self.Q_min[4])
-        self.Q_vz = self.Q_max[5] - alpha_z*(self.Q_max[5] - self.Q_min[5])
+        self.Q_vx = self.Q_min[3] + alpha_vx*(self.Q_max[3] - self.Q_min[3])
+        self.Q_vy = self.Q_min[4] + alpha_vy*(self.Q_max[4] - self.Q_min[4])
+        self.Q_vz = self.Q_min[5] + alpha_vz*(self.Q_max[5] - self.Q_min[5])
 
-        self.R_delta_x = self.R_delta_max[0] - alpha_x*(self.R_delta_max[0] - self.R_delta_min[0])
-        self.R_delta_y = self.R_delta_max[1] - alpha_y*(self.R_delta_max[1] - self.R_delta_min[1])
-        self.R_delta_alt = self.R_delta_max[2] - alpha_z*(self.R_delta_max[2] - self.R_delta_min[2])
+        self.R_x = self.R_max[0] - alpha_x*(self.R_max[0] - self.R_min[0])
+        self.R_y = self.R_max[1] - alpha_y*(self.R_max[1] - self.R_min[1])
+        self.R_alt = self.R_max[2] - alpha_z*(self.R_max[2] - self.R_min[2])
 
         dist_gain_msg = Float32MultiArray()
         dist_gain_msg.data = [self.K_x, self.K_y, self.K_alt, self.K_vx, self.K_vy, self.K_vz]
         self.dist_gain_pub.publish(dist_gain_msg)
 
         weights_msg = Float32MultiArray()
-        weights_msg.data = [self.Q_x, self.Q_y, self.Q_alt, self.Q_vx, self.Q_vy, self.Q_vz, self.R_delta_x, self.R_delta_y, self.R_delta_z]
+        weights_msg.data = [self.Q_x, self.Q_y, self.Q_alt, self.Q_vx, self.Q_vy, self.Q_vz, self.R_x, self.R_y, self.R_alt]
         self.weights_MPC_pub.publish(weights_msg)
 
         self.previous_x_error = error_x
         self.previous_y_error = error_y
         self.previous_alt_error = error_z
+        self.previous_vx_error = error_vx
+        self.previous_vy_error = error_vy
+        self.previous_vz_error = error_vz
 
         self.previous_time = self.current_time
 

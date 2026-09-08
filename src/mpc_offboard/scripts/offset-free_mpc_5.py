@@ -39,13 +39,14 @@ class PositionMPC:
             40.0, 40.0, 100.0,   # posisi
             20.0, 20.0, 12.0     # kecepatan
         ])
-        self.R_delta_def = np.diag([0.12, 0.12, 0.06])  # penalti perubahan u
+        self.R_def = np.diag([0.8, 0.8, 0.10])     # penalti besarnya u
+        self.R_delta = np.diag([0.10, 0.10, 0.04])  # penalti perubahan u
 
         self.q = self.C_model.shape[0]
         self.na = self.nx + self.q
 
         self.Q_flc = None
-        self.R_delta_flc = None
+        self.R_flc = None
 
         self.A_aug = np.zeros((self.na, self.na))
         self.B_aug = np.zeros((self.na, self.nu))
@@ -55,7 +56,6 @@ class PositionMPC:
 
         self.P_stack = np.zeros((self.y_hor*self.q, self.na))
         self.H_stack = np.zeros((self.y_hor*self.q, self.c_hor*self.nu))
-        self.L_stack = np.zeros((self.y_hor*self.q, self.y_hor*self.na))
         self.R_delta_bar = np.zeros((self.c_hor*self.nu, self.c_hor*self.nu))
         self.H = np.zeros((self.c_hor*self.nu, self.c_hor*self.nu))
 
@@ -71,7 +71,6 @@ class PositionMPC:
         self.x_meas_prev = np.zeros(self.nx)
 
         # SUBSCRIBERS
-        self.K_sub = rospy.Subscriber('/flc/disturbance_gain', Float32MultiArray, self.K_callback, queue_size=10)
         self.weight_sub = rospy.Subscriber('/flc/mpc_weights', Float32MultiArray, self.weight_callback,queue_size=10)
 
         # PUBLISHER
@@ -102,12 +101,6 @@ class PositionMPC:
         self.C_aug = np.block([np.zeros((self.q, n)), I_qq])
         self.build_prediction_matrix()
 
-    def K_callback(self,msg:Float32MultiArray):
-        if len(msg.data) != 6:
-            rospy.logwarn("Received K data with incorrect length")
-            return
-        self.K = np.diag([msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]])
-
     def build_prediction_matrix(self):
         for i in range(self.y_hor):
             self.P_stack[i*self.q:(1+i)*self.q, :] = self.C_aug @ np.linalg.matrix_power(self.A_aug,i)
@@ -118,33 +111,29 @@ class PositionMPC:
                 for _ in range(j-k):
                     A_power = A_power @ self.A_aug
                 self.H_stack[j*self.q:(j+1)*self.q, k*self.nu:(k+1)*self.nu] = self.C_aug @ A_power @ self.B_aug
-
-        for j in range(self.y_hor):
-            for k in range(j+1):
-                self.L_stack[j*self.q:(j+1)*self.q, k*self.na:(k+1)*self.na] = \
-                    self.C_aug @ np.linalg.matrix_power(self.A_aug, j-k)
         self.qp_matrices()
 
     def qp_matrices(self):
         Q_bar = np.kron(np.eye(self.y_hor), self.active_Q)
+        R_bar = np.kron(np.eye(self.c_hor), self.active_R)
 
         R_delta_bar = np.zeros((self.c_hor*self.nu, self.c_hor*self.nu))
         for i in range(self.c_hor):
             # Diagonal: R_delta for endpoints, 2*R_delta for middle terms
             if i == 0 or i == self.c_hor - 1:
                 R_delta_bar[i*self.nu:(i+1)*self.nu,
-                            i*self.nu:(i+1)*self.nu] = self.active_R_delta
+                            i*self.nu:(i+1)*self.nu] = self.R_delta
             else:
                 R_delta_bar[i*self.nu:(i+1)*self.nu,
-                            i*self.nu:(i+1)*self.nu] = 2 * self.active_R_delta
+                            i*self.nu:(i+1)*self.nu] = 2 * self.R_delta
             # Off-diagonals
             if i > 0:
                 R_delta_bar[i*self.nu:(i+1)*self.nu,
-                            (i-1)*self.nu:i*self.nu] = -self.active_R_delta
+                            (i-1)*self.nu:i*self.nu] = -self.R_delta
                 R_delta_bar[(i-1)*self.nu:i*self.nu,
-                            i*self.nu:(i+1)*self.nu] = -self.active_R_delta
+                            i*self.nu:(i+1)*self.nu] = -self.R_delta
 
-        H_mat = self.H_stack.T @ Q_bar @ self.H_stack + R_delta_bar
+        H_mat = self.H_stack.T @ Q_bar @ self.H_stack + R_bar + R_delta_bar
         self.H = (H_mat + H_mat.T) / 2.0
 
         # Verify positive definiteness
@@ -154,7 +143,7 @@ class PositionMPC:
             rospy.logwarn("H matrix is NOT positive definite ❌")
 
         self.Q_bar = Q_bar
-        self.R_bar = R_delta_bar
+        self.R_delta_bar = R_delta_bar
 
     def compute_control(self, x_meas, x_ref):
         ref = np.tile(x_ref, self.y_hor)
@@ -183,8 +172,8 @@ class PositionMPC:
             u = u_opt[:self.nu]
 
             z_err = abs(x_meas[2] - x_ref[2])
-            if z_err > 0.2:
-                lateral_reduction = np.clip(1.0 - (z_err - 0.3)*2.0, 0.3, 1.0)
+            if z_err > 0.3:
+                lateral_reduction = np.clip(1.0 - (z_err - 0.3)*2.0, 0.5, 1.0)
                 u[0] *= lateral_reduction
                 u[1] *= lateral_reduction
 
@@ -205,7 +194,7 @@ class PositionMPC:
             return
         weights_recieved = msg.data
         self.Q_flc = np.diag(weights_recieved[0:6])
-        self.R_delta_flc = np.diag(weights_recieved[6:9])
+        self.R_flc = np.diag(weights_recieved[6:9])
         self.qp_matrices()
 
     @property
@@ -213,12 +202,12 @@ class PositionMPC:
         return self.Q_flc if self.Q_flc is not None else self.Q_def
 
     @property
-    def active_R_delta(self):
-        return self.R_delta_flc if self.R_delta_flc is not None else self.R_delta_def
+    def active_R(self):
+        return self.R_flc if self.R_flc is not None else self.R_def
     
     def _publish_active_weight(self):
         weights_used = Float32MultiArray()
-        weights_used.data = list(np.concatenate((np.diag(self.active_Q), np.diag(self.active_R_delta))))
+        weights_used.data = list(np.concatenate((np.diag(self.active_Q), np.diag(self.active_R))))
         self.weight_pub.publish(weights_used)
         
 def acceleration_to_attitude_thrust_px4(accel_ned, yaw_desired, hover_thrust=0.35, gravity=9.81):
